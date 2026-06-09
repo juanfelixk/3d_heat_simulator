@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { SimParams } from "@/components/ControlPanel";
 import { CONTAINER_MATERIALS, LIQUID_MATERIALS, AIR_CONDITIONS, HEAT_SOURCE_SIZES } from "./materials";
+import { SolverSocket } from "./solverSocket";
 
 export interface ContainerProfile {
   front: Float32Array<ArrayBuffer>;
@@ -29,8 +30,12 @@ function paramsToPayload(params: SimParams) {
   };
 }
 
+function toF32(arr: number[] | Float32Array): Float32Array<ArrayBuffer> {
+  return (arr instanceof Float32Array ? arr : new Float32Array(arr)) as Float32Array<ArrayBuffer>;
+}
+
 export function useSolver(params: SimParams, resetKey: number) {
-  const workerRef = useRef<Worker | null>(null);
+  const workerRef = useRef<SolverSocket | null>(null);
   const rafRef = useRef<number>(0);
   const tickInFlightRef = useRef(false);
 
@@ -58,28 +63,26 @@ export function useSolver(params: SimParams, resetKey: number) {
     }
     tickInFlightRef.current = false;
 
-    const worker = new Worker(
-      new URL("./solver.worker.ts", import.meta.url),
-      { type: "module" }
-    );
+    const worker = new SolverSocket();
     workerRef.current = worker;
 
-    worker.onmessage = (e: MessageEvent) => {
+    worker.onmessage = (e) => {
       tickInFlightRef.current = false;
 
-      const { type, payload } = e.data;
+      const { type, payload } = e.data as { type: string; payload: any };
       if (type !== "STATE") return;
       if (payload.epoch !== resetEpochRef.current) return;
 
-      profileRef.current = payload.profile;
+      profileRef.current = toF32(payload.profile);
       containerProfileRef.current = {
-        front: payload.wallFront, back: payload.wallBack,
-        left: payload.wallLeft, right: payload.wallRight,
-        floor: payload.wallFloor,
+        front: toF32(payload.wallFront),
+        back:  toF32(payload.wallBack),
+        left:  toF32(payload.wallLeft),
+        right: toF32(payload.wallRight),
+        floor: toF32(payload.wallFloor),
       };
 
-      const next = (payload.profile as Float32Array)
-        .reduce((a: number, b: number) => a + b, 0) / payload.profile.length;
+      const next = (profileRef.current as Float32Array).reduce((a: number, b: number) => a + b, 0) / profileRef.current.length;
 
       if (Math.abs(next - lastMean.current) > 0.05) {
         lastMean.current = next;
@@ -124,7 +127,6 @@ export function useSolver(params: SimParams, resetKey: number) {
     setSimTime(0);
   }, [resetKey]);
 
-  // ── RAF loop ─────────────────────────────────────────────────
   useEffect(() => {
     const tick = (timestamp: number) => {
       const running = paramsRef.current.running;
